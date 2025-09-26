@@ -1,0 +1,839 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>フィラメント残量管理</title>
+    <link rel="icon" href="Gemini_Generated_Image_sxvll4sxvll4sxvl.jpg" type="image/jpeg">
+
+    <!-- iPad/iPhoneでホーム画面に追加するための設定 -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="apple-mobile-web-app-title" content="フィラメント管理">
+    <link rel="apple-touch-icon" href="Gemini_Generated_Image_sxvll4sxvll4sxvl.jpg">
+
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- 追加：バーコード生成・読み取りライブラリ -->
+    <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js"></script>
+    <script type="text/javascript" src="https://unpkg.com/@zxing/library@latest/umd/index.min.js"></script>
+
+
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f8fafc;
+        }
+        .progress-bar-bg {
+            background-color: #e5e7eb;
+            border-radius: 9999px;
+            overflow: hidden;
+        }
+        .progress-bar-fg {
+            height: 100%;
+            border-radius: 9999px;
+            transition: width 0.3s ease-in-out;
+        }
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #f1f1f1; }
+        ::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 10px; }
+        ::-webkit-scrollbar-thumb:hover { background: #9ca3af; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, onSnapshot, doc, updateDoc, deleteDoc, query, where, getDocs, serverTimestamp, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // ユーザー提供のFirebase設定を使用
+        const firebaseConfig = {
+            apiKey: "",
+            authDomain: "",
+            projectId: "",
+            storageBucket: "",
+            messagingSenderId: "",
+            appId: ""
+        };
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+
+        window.db = db;
+        window.auth = auth;
+        const initialAuthToken = undefined; 
+        window.initialAuthToken = initialAuthToken;
+
+        window.firebase = {
+            initializeApp, getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken, getFirestore, collection, addDoc, onSnapshot, doc, updateDoc, deleteDoc, query, where, getDocs, serverTimestamp
+        };
+    </script>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo, useCallback, useRef } = React;
+        
+        const saveCanvasAsPng = (canvasId, filename) => {
+            const canvas = document.getElementById(canvasId);
+            if (!canvas) {
+                console.error("Canvas element not found:", canvasId);
+                return;
+            }
+            const a = document.createElement('a');
+            a.href = canvas.toDataURL('image/png');
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+        };
+
+        const drawBarcodeWithRotatedText = (canvasId, text, options = {}) => {
+            const canvas = document.getElementById(canvasId);
+            if (!canvas) return;
+
+            const {
+                barcodeWidth = 2,
+                barcodeHeight = 50,
+                fontSize = 16,
+                padding = 10,
+                fontFamily = 'monospace'
+            } = options;
+
+            const tempCanvas = document.createElement('canvas');
+            JsBarcode(tempCanvas, text, {
+                format: "CODE128",
+                width: barcodeWidth,
+                height: barcodeHeight,
+                displayValue: false,
+                margin: 0
+            });
+            const barcodeCanvasWidth = tempCanvas.width;
+            const barcodeCanvasHeight = tempCanvas.height;
+            
+            const finalWidth = barcodeCanvasWidth + fontSize + padding;
+            const finalHeight = barcodeCanvasHeight;
+            canvas.width = finalWidth;
+            canvas.height = finalHeight;
+
+            const ctx = canvas.getContext('2d');
+            
+            ctx.fillStyle = 'white';
+            ctx.fillRect(0, 0, finalWidth, finalHeight);
+            
+            ctx.drawImage(tempCanvas, 0, 0);
+
+            ctx.save();
+            ctx.font = `${fontSize}px ${fontFamily}`;
+            ctx.fillStyle = 'black';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            
+            ctx.translate(barcodeCanvasWidth + padding / 2 + fontSize / 2, finalHeight / 2);
+            ctx.rotate(Math.PI / 2);
+            ctx.fillText(text, 0, 0);
+            ctx.restore();
+        };
+
+        const QuickUsageForm = ({ 
+            handleQuickUsageSubmit, 
+            quickInputId, 
+            setQuickInputId, 
+            quickInputUsage, 
+            setQuickInputUsage, 
+            quickUpdateStatus,
+            setScannerTarget,
+            setIsScannerOpen
+        }) => {
+            return (
+                <div className="bg-white p-6 rounded-lg shadow-md border border-gray-200 mb-8">
+                    <h2 className="text-xl font-semibold mb-4">クイック使用量入力</h2>
+                    <form onSubmit={handleQuickUsageSubmit} className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
+                        <div className="md:col-span-2">
+                            <label htmlFor="quick-id" className="block text-sm font-medium text-gray-700">フィラメント番号</label>
+                            <div className="mt-1 flex">
+                                <input 
+                                    type="text" 
+                                    id="quick-id"
+                                    value={quickInputId} 
+                                    onChange={e => setQuickInputId(e.target.value)} 
+                                    className="flex-grow block w-full shadow-sm sm:text-sm border-gray-300 rounded-l-md p-2"
+                                    maxLength="5"
+                                />
+                                <button 
+                                    type="button"
+                                    onClick={() => { setScannerTarget('quickUsage'); setIsScannerOpen(true); }}
+                                    className="inline-flex items-center px-3 rounded-r-md border border-l-0 border-gray-300 bg-gray-50 text-gray-500 hover:bg-gray-100"
+                                >
+                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4" /><path d="M3 6.2C3 5.008 3.992 4.02 5.2 4.02h13.6c1.208 0 2.2 0.988 2.2 2.18V17.8c0 1.192-0.992 2.18-2.2 2.18H5.2C3.992 19.98 3 19.012 3 17.8V6.2z"></path></svg>
+                                </button>
+                            </div>
+                        </div>
+                        <div>
+                            <label htmlFor="quick-usage" className="block text-sm font-medium text-gray-700">使用量 (g)</label>
+                            <input 
+                                type="number"
+                                id="quick-usage"
+                                value={quickInputUsage}
+                                onChange={e => setQuickInputUsage(e.target.value)}
+                                className="mt-1 block w-full shadow-sm sm:text-sm border-gray-300 rounded-md p-2" 
+                            />
+                        </div>
+                        <button 
+                            type="submit" 
+                            className="w-full bg-green-600 text-white font-semibold py-2 px-4 rounded-lg shadow-md hover:bg-green-700 transition-all duration-300 h-10"
+                            disabled={quickUpdateStatus.status === 'loading'}
+                        >
+                            {quickUpdateStatus.status === 'loading' ? '処理中...' : '反映する'}
+                        </button>
+                    </form>
+                    {quickUpdateStatus.message && (
+                        <div className={`mt-4 text-sm p-3 rounded-md ${
+                            quickUpdateStatus.status === 'success' ? 'bg-green-100 text-green-800' : 
+                            quickUpdateStatus.status === 'error' ? 'bg-red-100 text-red-800' : 'bg-blue-100 text-blue-800'
+                        }`}>
+                            {quickUpdateStatus.message}
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+
+        const App = () => {
+            const [user, setUser] = useState(null);
+            const [filaments, setFilaments] = useState([]);
+            const [newFilament, setNewFilament] = useState({
+                type: 'PLA', color: 'ブラック', initialWeight: 1000, currentWeight: 1000,
+            });
+            const [otherFilamentType, setOtherFilamentType] = useState('');
+            const [searchQuery, setSearchQuery] = useState('');
+            const [sortBy, setSortBy] = useState('createdAt');
+            const [generatedId, setGeneratedId] = useState(null);
+            const [isIdModalOpen, setIsIdModalOpen] = useState(false);
+            const [showDeleteConfirm, setShowDeleteConfirm] = useState(null);
+            const [formError, setFormError] = useState('');
+            const [globalError, setGlobalError] = useState('');
+            const [loading, setLoading] = useState(true);
+            const [formVisible, setFormVisible] = useState(false);
+            const [isScannerOpen, setIsScannerOpen] = useState(false);
+
+            const [quickInputId, setQuickInputId] = useState('');
+            const [quickInputUsage, setQuickInputUsage] = useState('');
+            const [quickUpdateStatus, setQuickUpdateStatus] = useState({ status: 'idle', message: '' });
+            const [scannerTarget, setScannerTarget] = useState('search');
+
+            const filamentTypes = ['PLA', 'ABS', 'PETG', 'TPU', 'ASA', 'PC', 'その他'];
+            const filamentColors = ['ブラック', 'ホワイト', 'グレー', 'レッド', 'ブルー', 'グリーン', 'イエロー', 'オレンジ', 'パープル', 'ナチュラル', 'シルバー', 'ゴールド', 'その他'];
+
+            useEffect(() => {
+                const unsubscribe = window.firebase.onAuthStateChanged(window.auth, async (currentUser) => {
+                    if (currentUser) {
+                        setUser(currentUser);
+                    } else {
+                        try {
+                            await window.firebase.signInAnonymously(window.auth);
+                        } catch (error) {
+                            console.error("認証エラー:", error);
+                            if (error.code === 'auth/configuration-not-found') {
+                                setGlobalError("認証設定エラー: Firebaseコンソールで「Authentication」>「Sign-in method」に移動し、「匿名」プロバイダを有効にしてください。");
+                            } else {
+                                setGlobalError(`認証エラーが発生しました: ${error.message}`);
+                            }
+                            setLoading(false);
+                        }
+                    }
+                });
+                return () => unsubscribe();
+            }, []);
+
+            useEffect(() => {
+                if (!user) return;
+                setLoading(true);
+                setGlobalError('');
+                const filamentsCollectionRef = window.firebase.collection(window.db, "filaments");
+                
+                const unsubscribe = window.firebase.onSnapshot(filamentsCollectionRef, (querySnapshot) => {
+                    const filamentsData = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                    setFilaments(filamentsData);
+                    setLoading(false);
+                }, (error) => {
+                    console.error("データ取得エラー:", error);
+                    setGlobalError("データベースからのデータ取得に失敗しました。Firestoreのセキュリティルールを確認してください。");
+                    setLoading(false);
+                });
+
+                return () => unsubscribe();
+            }, [user]);
+            
+            const handleQuickUsageSubmit = async (e) => {
+                e.preventDefault();
+                const id = quickInputId.trim();
+                const usage = Number(quickInputUsage);
+
+                if (!id || !usage || usage <= 0) {
+                    setQuickUpdateStatus({ status: 'error', message: 'IDと正の使用量を入力してください。' });
+                    return;
+                }
+
+                setQuickUpdateStatus({ status: 'loading', message: '検索中...' });
+
+                const filamentsCollectionRef = window.firebase.collection(window.db, "filaments");
+                const q = window.firebase.query(filamentsCollectionRef, window.firebase.where("filamentId", "==", id));
+                
+                try {
+                    const querySnapshot = await window.firebase.getDocs(q);
+
+                    if (querySnapshot.empty) {
+                        setQuickUpdateStatus({ status: 'error', message: `ID [${id}] が見つかりません。` });
+                        return;
+                    }
+
+                    const filamentDoc = querySnapshot.docs[0];
+                    const filamentData = filamentDoc.data();
+                    const docId = filamentDoc.id;
+
+                    const yieldLoss = 1;
+                    const totalUsedAmount = usage + yieldLoss;
+                    const newWeight = filamentData.currentWeight - totalUsedAmount;
+
+                    if (newWeight < 0) {
+                        setQuickUpdateStatus({ status: 'error', message: `残量不足です。残量: ${filamentData.currentWeight}g` });
+                        return;
+                    }
+
+                    setQuickUpdateStatus({ status: 'loading', message: '更新中...' });
+                    const filamentDocRef = window.firebase.doc(window.db, "filaments", docId);
+                    await window.firebase.updateDoc(filamentDocRef, { currentWeight: newWeight });
+
+                    setQuickUpdateStatus({ status: 'success', message: `ID [${id}] を更新しました。新残量: ${newWeight.toFixed(1)}g` });
+                    setQuickInputId('');
+                    setQuickInputUsage('');
+
+                } catch (error) {
+                    console.error("クイック更新エラー:", error);
+                    setQuickUpdateStatus({ status: 'error', message: '更新中にエラーが発生しました。' });
+                }
+            };
+
+            useEffect(() => {
+                if (quickUpdateStatus.status === 'success' || quickUpdateStatus.status === 'error') {
+                    const timer = setTimeout(() => {
+                        setQuickUpdateStatus({ status: 'idle', message: '' });
+                    }, 4000);
+                    return () => clearTimeout(timer);
+                }
+            }, [quickUpdateStatus]);
+
+
+            const generateUniqueId = async () => {
+                const filamentsCollectionRef = window.firebase.collection(window.db, "filaments");
+                let newId, isUnique = false, attempts = 0;
+                while (!isUnique && attempts < 10) {
+                    newId = String(Math.floor(10000 + Math.random() * 90000));
+                    const q = window.firebase.query(filamentsCollectionRef, window.firebase.where("filamentId", "==", newId));
+                    const querySnapshot = await window.firebase.getDocs(q);
+                    if (querySnapshot.empty) isUnique = true;
+                    attempts++;
+                }
+                if (!isUnique) throw new Error("ユニークIDの生成に失敗しました。");
+                return newId;
+            };
+
+            const handleAddFilament = async (e) => {
+                e.preventDefault();
+                setFormError('');
+
+                if (newFilament.type === 'その他' && !otherFilamentType.trim()) {
+                    setFormError("「その他」を選択した場合は、種類名をテキストで入力してください。");
+                    return;
+                }
+
+                const initialWeightNum = Number(newFilament.initialWeight);
+                const currentWeightNum = Number(newFilament.currentWeight);
+
+                if (!user) {
+                    setFormError("データベースに接続できませんでした。ページを再読み込みしてください。");
+                    return;
+                }
+
+                if (initialWeightNum <= 0 || currentWeightNum < 0 || currentWeightNum > initialWeightNum) {
+                    setFormError("入力値が正しくありません。現在重量は初期重量を超えることはできません。");
+                    return;
+                }
+
+                try {
+                    const newId = await generateUniqueId();
+                    const filamentsCollectionRef = window.firebase.collection(window.db, "filaments");
+                    
+                    const dataToAdd = {
+                        ...newFilament,
+                        type: newFilament.type === 'その他' ? otherFilamentType.trim() : newFilament.type,
+                        filamentId: newId,
+                        initialWeight: initialWeightNum,
+                        currentWeight: currentWeightNum,
+                        createdAt: window.firebase.serverTimestamp()
+                    };
+
+                    await window.firebase.addDoc(filamentsCollectionRef, dataToAdd);
+                    setGeneratedId(newId);
+                    setIsIdModalOpen(true);
+                    setFormVisible(false);
+                    setNewFilament({ type: 'PLA', color: 'ブラック', initialWeight: 1000, currentWeight: 1000 });
+                    setOtherFilamentType('');
+                } catch (error) {
+                    console.error("ドキュメント追加エラー: ", error);
+                    setFormError("フィラメントの追加に失敗しました。");
+                }
+            };
+
+            const handleWeightChange = useCallback(async (id, newWeightStr, initialWeight) => {
+                const newWeight = Number(newWeightStr);
+                if (newWeightStr === '' || isNaN(newWeight) || newWeight < 0 || newWeight > initialWeight) return;
+                const filamentDocRef = window.firebase.doc(window.db, "filaments", id);
+                try {
+                    await window.firebase.updateDoc(filamentDocRef, { currentWeight: newWeight });
+                } catch (error) {
+                    console.error("ドキュメント更新エラー: ", error);
+                }
+            }, []);
+
+            const handleDeleteClick = (id) => setShowDeleteConfirm(id);
+
+            const executeDelete = async () => {
+                if (!showDeleteConfirm) return;
+                const filamentDocRef = window.firebase.doc(window.db, "filaments", showDeleteConfirm);
+                try {
+                    await window.firebase.deleteDoc(filamentDocRef);
+                } catch (error) {
+                    console.error("ドキュメント削除エラー: ", error);
+                } finally {
+                    setShowDeleteConfirm(null);
+                }
+            };
+            
+            const sortedAndFilteredFilaments = useMemo(() => {
+                let processedFilaments = [...filaments];
+
+                if (searchQuery) {
+                    const lowercasedQuery = searchQuery.toLowerCase();
+                    processedFilaments = processedFilaments.filter(f =>
+                        (f.filamentId && f.filamentId.includes(searchQuery)) ||
+                        (f.type && f.type.toLowerCase().includes(lowercasedQuery))
+                    );
+                }
+
+                switch (sortBy) {
+                    case 'type':
+                        processedFilaments.sort((a, b) => a.type.localeCompare(b.type));
+                        break;
+                    case 'color':
+                        processedFilaments.sort((a, b) => a.color.localeCompare(b.color));
+                        break;
+                    case 'percentage':
+                        processedFilaments.sort((a, b) => {
+                            const percentageA = a.initialWeight > 0 ? (a.currentWeight / a.initialWeight) : 0;
+                            const percentageB = b.initialWeight > 0 ? (b.currentWeight / b.initialWeight) : 0;
+                            return percentageA - percentageB;
+                        });
+                        break;
+                    case 'createdAt':
+                    default:
+                        processedFilaments.sort((a, b) => (b.createdAt?.toMillis() || 0) - (a.createdAt?.toMillis() || 0));
+                        break;
+                }
+                return processedFilaments;
+            }, [searchQuery, filaments, sortBy]);
+            
+            // **ここからコンポーネント定義**
+
+            const FilamentCard = ({ filament, onDeleteClick }) => {
+                const [weightInput, setWeightInput] = useState(filament.currentWeight.toString());
+                const [usedWeight, setUsedWeight] = useState('');
+                const [showBarcode, setShowBarcode] = useState(false);
+                const percentage = filament.initialWeight > 0 ? (filament.currentWeight / filament.initialWeight) * 100 : 0;
+                const barcodeId = `barcode-${filament.id}`;
+
+                useEffect(() => { setWeightInput(filament.currentWeight.toString()); }, [filament.currentWeight]);
+                
+                useEffect(() => {
+                    if (showBarcode && filament.filamentId) {
+                        drawBarcodeWithRotatedText(barcodeId, filament.filamentId, { barcodeHeight: 50, fontSize: 16 });
+                    }
+                }, [showBarcode, filament.filamentId, barcodeId]);
+
+
+                const onWeightInputBlur = () => handleWeightChange(filament.id, weightInput, filament.initialWeight);
+                const onWeightInputChange = (e) => setWeightInput(e.target.value);
+                
+                const handleSubtractWeight = () => {
+                    const usedAmount = Number(usedWeight);
+                    const yieldLoss = 1; 
+                    const totalUsedAmount = usedAmount + yieldLoss;
+                    if (!usedAmount || usedAmount <= 0 || totalUsedAmount > filament.currentWeight) {
+                        setUsedWeight('');
+                        return;
+                    }
+                    const newCurrentWeight = Math.max(0, filament.currentWeight - totalUsedAmount);
+                    handleWeightChange(filament.id, String(newCurrentWeight), filament.initialWeight);
+                    setUsedWeight('');
+                };
+
+                const getProgressBarColor = (p) => {
+                    if (p > 50) return 'bg-green-500';
+                    if (p > 20) return 'bg-yellow-500';
+                    return 'bg-red-500';
+                }
+
+                return (
+                    <div className="bg-white p-4 rounded-lg shadow-md border border-gray-200 flex flex-col justify-between transition-shadow hover:shadow-lg">
+                        <div>
+                            <div className="flex justify-between items-start mb-2">
+                                <p className="text-2xl font-bold text-gray-800 tracking-wider">{filament.filamentId}</p>
+                                <div className="flex space-x-2">
+                                    <span className="bg-gray-100 text-gray-700 text-xs font-semibold px-2.5 py-1 rounded-full">{filament.type}</span>
+                                    <span className="bg-gray-100 text-gray-700 text-xs font-semibold px-2.5 py-1 rounded-full">{filament.color}</span>
+                                </div>
+                            </div>
+                            <div className="my-3">
+                                <div className="progress-bar-bg w-full h-4"><div className={`progress-bar-fg ${getProgressBarColor(percentage)}`} style={{ width: `${percentage}%` }}></div></div>
+                                <p className="text-right text-sm text-gray-600 mt-1">{Math.round(percentage)}%</p>
+                            </div>
+                            <div className="flex items-center justify-between space-x-2">
+                                <div className="flex items-baseline"><input type="number" value={weightInput} onChange={onWeightInputChange} onBlur={onWeightInputBlur} className="w-24 text-lg font-medium text-gray-800 p-1 border-b-2 border-gray-300 focus:border-blue-500 outline-none transition" min="0" max={filament.initialWeight} /><span className="text-sm text-gray-500 ml-1">g / {filament.initialWeight}g</span></div>
+                                <div className="flex items-center space-x-2">
+                                    <button onClick={() => setShowBarcode(!showBarcode)} className="text-gray-400 hover:text-blue-500 transition-colors" title="バーコード表示">
+                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6h16M4 10h16M4 14h16M4 18h16" /></svg>
+                                    </button>
+                                    <button onClick={() => onDeleteClick(filament.id)} className="text-gray-400 hover:text-red-500 transition-colors"><svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm4 0a1 1 0 012 0v6a1 1 0 11-2 0V8z" clipRule="evenodd" /></svg></button>
+                                </div>
+                            </div>
+                            {showBarcode && (
+                                <div className="mt-4 flex flex-col items-center">
+                                    <canvas id={barcodeId}></canvas>
+                                    <button onClick={() => saveCanvasAsPng(barcodeId, `barcode-${filament.filamentId}.png`)} className="mt-2 bg-gray-200 text-gray-800 font-semibold py-1 px-3 rounded-lg hover:bg-gray-300 transition-colors text-xs flex items-center">
+                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                                        画像として保存
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+                        <div className="mt-4 pt-4 border-t border-gray-200">
+                             <label className="block text-sm font-medium text-gray-700">使用量</label> 
+                             <div className="mt-1 flex rounded-md shadow-sm">
+                                 <input type="number" value={usedWeight} onChange={(e) => setUsedWeight(e.target.value)} className="flex-1 min-w-0 block w-full px-3 py-2 rounded-none rounded-l-md focus:ring-blue-500 focus:border-blue-500 sm:text-sm border-gray-300" />
+                                 <button onClick={handleSubtractWeight} className="inline-flex items-center px-3 rounded-r-md border border-l-0 border-gray-300 bg-gray-50 text-gray-500 text-sm hover:bg-gray-100">反映</button>
+                             </div>
+                        </div>
+                    </div>
+                );
+            };
+
+            const IdModal = () => {
+                useEffect(() => {
+                    if (isIdModalOpen && generatedId) {
+                        drawBarcodeWithRotatedText('barcode-canvas', generatedId, { barcodeWidth: 3, barcodeHeight: 80, fontSize: 24 });
+                    }
+                }, [isIdModalOpen, generatedId]);
+
+                if (!isIdModalOpen) return null;
+
+                return (
+                    <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 transition-opacity">
+                        <div className="bg-white rounded-2xl shadow-2xl p-8 md:p-12 text-center transform scale-100 transition-transform">
+                            <h2 className="text-xl md:text-2xl font-semibold text-gray-700 mb-2">フィラメントが追加されました</h2>
+                            <p className="text-gray-500 mb-6">この番号をフィラメントに貼り付けてください。</p>
+                            <p className="text-6xl md:text-8xl font-bold text-blue-600 tracking-widest bg-blue-50 p-4 md:p-6 rounded-lg my-4">{generatedId}</p>
+                            
+                            <div className="my-6 flex flex-col items-center">
+                                <canvas id="barcode-canvas"></canvas>
+                                <button onClick={() => saveCanvasAsPng('barcode-canvas', `barcode-${generatedId}.png`)} className="mt-4 bg-gray-200 text-gray-800 font-semibold py-2 px-4 rounded-lg hover:bg-gray-300 transition-colors text-sm flex items-center">
+                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                                    画像として保存
+                                </button>
+                            </div>
+                            
+                            <button onClick={() => setIsIdModalOpen(false)} className="mt-4 w-full bg-blue-600 text-white font-bold py-3 px-6 rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-4 focus:ring-blue-300 transition-all duration-300">閉じる</button>
+                        </div>
+                    </div>
+                );
+            };
+            
+            const ConfirmDeleteModal = ({ onConfirm, onCancel }) => (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                    <div className="bg-white rounded-lg shadow-xl p-6 text-center w-full max-w-md">
+                        <h3 className="text-lg font-semibold text-gray-900">本当に削除しますか？</h3>
+                        <p className="text-sm text-gray-500 mt-2">この操作は取り消せません。</p>
+                        <div className="mt-6 flex justify-center space-x-4">
+                            <button onClick={onCancel} className="bg-gray-200 text-gray-800 font-semibold py-2 px-6 rounded-lg hover:bg-gray-300 transition-colors">キャンセル</button>
+                            <button onClick={onConfirm} className="bg-red-600 text-white font-semibold py-2 px-6 rounded-lg hover:bg-red-700 transition-colors">削除</button>
+                        </div>
+                    </div>
+                </div>
+            );
+
+            // **変更：BarcodeScannerModalを最新の仕様に更新**
+            const BarcodeScannerModal = ({ isOpen, onClose, onScanSuccess }) => {
+                const videoRef = useRef(null);
+                const streamRef = useRef(null);
+                const [error, setError] = useState('');
+                const [status, setStatus] = useState('idle');
+                const [videoDevices, setVideoDevices] = useState([]);
+                const [selectedDeviceId, setSelectedDeviceId] = useState('');
+                
+                const [videoTrack, setVideoTrack] = useState(null);
+                const [zoomCaps, setZoomCaps] = useState(null);
+                const [zoom, setZoom] = useState(1);
+                const [torchSupported, setTorchSupported] = useState(false);
+                const [torchOn, setTorchOn] = useState(false);
+
+                useEffect(() => {
+                    if (!isOpen) {
+                        if (streamRef.current) {
+                            streamRef.current.getTracks().forEach(track => track.stop());
+                            streamRef.current = null;
+                        }
+                        return;
+                    }
+
+                    let codeReader;
+                    
+                    const setupAndScan = async (deviceId) => {
+                        try {
+                            const constraints = { video: { deviceId: { exact: deviceId }, width: { ideal: 1280 }, height: { ideal: 720 } } };
+                            const stream = await navigator.mediaDevices.getUserMedia(constraints);
+                            streamRef.current = stream;
+                            if(videoRef.current) videoRef.current.srcObject = stream;
+                            
+                            const track = stream.getVideoTracks()[0];
+                            setVideoTrack(track);
+                            const capabilities = track.getCapabilities();
+                            
+                            if (capabilities.zoom) {
+                                setZoomCaps(capabilities.zoom);
+                                const defaultZoom = capabilities.zoom.min + (capabilities.zoom.max - capabilities.zoom.min) / 4;
+                                track.applyConstraints({ advanced: [{ zoom: defaultZoom }] });
+                                setZoom(defaultZoom);
+                            }
+                            if(capabilities.torch) setTorchSupported(true);
+                            
+                            setStatus('scanning');
+                            setError('');
+                            
+                            const hints = new Map();
+                            hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.CODE_128]);
+                            hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+                            codeReader = new ZXing.BrowserBarcodeReader(hints);
+                            
+                            await codeReader.decodeFromStream(stream, videoRef.current, (result, err) => {
+                                if (result) {
+                                    onScanSuccess(result.getText());
+                                    onClose();
+                                }
+                            });
+                        } catch (err) {
+                            console.error("Stream error:", err);
+                            setError('カメラの起動に失敗しました。');
+                            setStatus('error');
+                        }
+                    };
+                    
+                    if(selectedDeviceId) {
+                        setupAndScan(selectedDeviceId);
+                    } else {
+                        setStatus('initializing');
+                        const tempReader = new ZXing.BrowserBarcodeReader();
+                        tempReader.listVideoInputDevices()
+                            .then(devices => navigator.mediaDevices.getUserMedia({ video: true }).then(stream => {
+                                stream.getTracks().forEach(t => t.stop());
+                                return devices;
+                            }))
+                            .then(devices => {
+                                setVideoDevices(devices);
+                                if (devices.length > 0) {
+                                    const backCamera = devices.find(d => /back|environment/i.test(d.label)) || devices[devices.length - 1];
+                                    setSelectedDeviceId(backCamera.deviceId);
+                                } else {
+                                    setError('利用可能なカメラが見つかりません。');
+                                    setStatus('error');
+                                }
+                            }).catch(err => {
+                                console.error("Device list error:", err);
+                                setError('カメラのリスト取得に失敗しました。');
+                                setStatus('error');
+                            });
+                    }
+
+                    return () => {
+                        if (codeReader) codeReader.reset();
+                    };
+
+                }, [isOpen, selectedDeviceId]);
+
+                const handleZoomChange = (e) => {
+                    if (videoTrack && zoomCaps) {
+                        const newZoom = parseFloat(e.target.value);
+                        setZoom(newZoom);
+                        videoTrack.applyConstraints({ advanced: [{ zoom: newZoom }] });
+                    }
+                };
+                
+                const toggleTorch = () => {
+                    if(videoTrack && torchSupported) {
+                        const newTorchState = !torchOn;
+                        videoTrack.applyConstraints({ advanced: [{ torch: newTorchState }] });
+                        setTorchOn(newTorchState);
+                    }
+                };
+
+                if (!isOpen) return null;
+
+                return (
+                    <div className="fixed inset-0 bg-black bg-opacity-75 flex flex-col items-center justify-center z-50 p-4">
+                        <div className="relative w-full max-w-lg">
+                            <video ref={videoRef} playsInline autoPlay className="w-full h-auto bg-gray-900 rounded-lg"></video>
+                            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-4/5 max-w-md h-1/4 border-2 border-white rounded-lg opacity-50 pointer-events-none"></div>
+                        </div>
+                        
+                        <div className="w-full max-w-xs mt-4 space-y-4">
+                            <p className="text-white text-center">
+                                {status === 'initializing' && 'カメラを準備中...'}
+                                {status === 'scanning' && '枠を目安に、バーコードをはっきりと映してください'}
+                            </p>
+                            {error && <p className="bg-red-500 text-white p-2 rounded-md text-sm text-center">{error}</p>}
+                            
+                             <div className="flex items-center justify-center space-x-4">
+                                {videoDevices.length > 1 && (
+                                    <select id="camera-select" value={selectedDeviceId} onChange={e => setSelectedDeviceId(e.target.value)} className="w-full p-2 rounded-md bg-gray-700 text-white border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                        {videoDevices.map(device => (
+                                            <option key={device.deviceId} value={device.deviceId}>
+                                                {device.label || `カメラ ${videoDevices.indexOf(device) + 1}`}
+                                            </option>
+                                        ))}
+                                    </select>
+                                )}
+                                {torchSupported && (
+                                     <button onClick={toggleTorch} className={`p-2 rounded-full transition-colors ${torchOn ? 'bg-yellow-400 text-gray-900' : 'bg-gray-600 text-white'}`}>
+                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2zM5 10h.01M19 10h.01M5 14h.01M19 14h.01" />
+                                        </svg>
+                                     </button>
+                                )}
+                             </div>
+                            
+                            {zoomCaps && (
+                                <div className="flex items-center space-x-2">
+                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v3m0 0v3m0-3h3m-3 0H7" /></svg>
+                                    <input type="range" min={zoomCaps.min} max={zoomCaps.max} step={zoomCaps.step} value={zoom} onChange={handleZoomChange} className="w-full h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer" />
+                                </div>
+                            )}
+                        </div>
+
+                        <button onClick={onClose} className="mt-6 bg-gray-600 text-white font-bold py-2 px-6 rounded-lg hover:bg-gray-700 transition-colors">キャンセル</button>
+                    </div>
+                );
+            };
+
+            return (
+                <div className="min-h-screen text-gray-800">
+                    <IdModal />
+                    {showDeleteConfirm && <ConfirmDeleteModal onConfirm={executeDelete} onCancel={() => setShowDeleteConfirm(null)} />}
+                    <BarcodeScannerModal 
+                        isOpen={isScannerOpen} 
+                        onClose={() => setIsScannerOpen(false)} 
+                        onScanSuccess={(text) => {
+                            if (scannerTarget === 'search') {
+                                setSearchQuery(text);
+                            } else {
+                                setQuickInputId(text);
+                            }
+                        }} 
+                    />
+
+                    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+                        <header className="flex flex-col sm:flex-row justify-between items-center mb-8">
+                            <h1 className="text-3xl font-bold text-gray-900 mb-4 sm:mb-0">フィラメント残量管理</h1>
+                            <button onClick={() => setFormVisible(!formVisible)} className="flex items-center bg-blue-600 text-white font-semibold py-2 px-4 rounded-lg shadow-md hover:bg-blue-700 transition-all duration-300">
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clipRule="evenodd" /></svg>
+                                {formVisible ? '追加フォームを閉じる' : '新規フィラメント追加'}
+                            </button>
+                        </header>
+                        
+                        {globalError && <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative mb-6" role="alert"><strong className="font-bold">エラー:</strong><span className="block sm:inline ml-2">{globalError}</span></div>}
+
+                        <QuickUsageForm 
+                            handleQuickUsageSubmit={handleQuickUsageSubmit}
+                            quickInputId={quickInputId}
+                            setQuickInputId={setQuickInputId}
+                            quickInputUsage={quickInputUsage}
+                            setQuickInputUsage={setQuickInputUsage}
+                            quickUpdateStatus={quickUpdateStatus}
+                            setScannerTarget={setScannerTarget}
+                            setIsScannerOpen={setIsScannerOpen}
+                        />
+
+                        {formVisible && (
+                            <div className="bg-white p-6 rounded-lg shadow-md border border-gray-200 mb-8">
+                                <h2 className="text-xl font-semibold mb-4">新規フィラメント追加</h2>
+                                {formError && <p className="text-red-500 text-sm mb-4 bg-red-50 p-3 rounded-md">{formError}</p>}
+                                <form onSubmit={handleAddFilament} className={`grid grid-cols-1 md:grid-cols-2 ${newFilament.type === 'その他' ? 'lg:grid-cols-6' : 'lg:grid-cols-5'} gap-4 items-end`}>
+                                    <div><label className="block text-sm font-medium text-gray-700">種類</label><select value={newFilament.type} onChange={e => setNewFilament({...newFilament, type: e.target.value})} className="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-md">{filamentTypes.map(type => <option key={type} value={type}>{type}</option>)}</select></div>
+                                    {newFilament.type === 'その他' && (
+                                        <div>
+                                            <label className="block text-sm font-medium text-gray-700">種類名</label>
+                                            <input type="text" value={otherFilamentType} onChange={e => setOtherFilamentType(e.target.value)} className="mt-1 focus:ring-blue-500 focus:border-blue-500 block w-full shadow-sm sm:text-sm border-gray-300 rounded-md p-2" />
+                                        </div>
+                                    )}
+                                    <div><label className="block text-sm font-medium text-gray-700">カラー</label><select value={newFilament.color} onChange={e => setNewFilament({...newFilament, color: e.target.value})} className="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-md">{filamentColors.map(color => <option key={color} value={color}>{color}</option>)}</select></div>
+                                    <div><label className="block text-sm font-medium text-gray-700">初期重量 (g)</label><input type="number" value={newFilament.initialWeight} onChange={e => setNewFilament({...newFilament, initialWeight: e.target.value})} className="mt-1 focus:ring-blue-500 focus:border-blue-500 block w-full shadow-sm sm:text-sm border-gray-300 rounded-md p-2" /></div>
+                                    <div><label className="block text-sm font-medium text-gray-700">現在重量 (g)</label><input type="number" value={newFilament.currentWeight} onChange={e => setNewFilament({...newFilament, currentWeight: e.target.value})} className="mt-1 focus:ring-blue-500 focus:border-blue-500 block w-full shadow-sm sm:text-sm border-gray-300 rounded-md p-2" /></div>
+                                    <button type="submit" className="w-full bg-blue-600 text-white font-semibold py-2 px-4 rounded-lg shadow-md hover:bg-blue-700 transition-all duration-300 h-10">追加する</button>
+                                </form>
+                            </div>
+                        )}
+
+                        <div className="bg-white p-6 rounded-lg shadow-md border border-gray-200">
+                            <h2 className="text-xl font-semibold mb-4">フィラメント一覧</h2>
+                            <div className="flex flex-col sm:flex-row items-start sm:items-end sm:space-x-4 mb-6">
+                                <div className="relative flex-grow w-full sm:w-auto mb-4 sm:mb-0">
+                                    <label htmlFor="search-input" className="block text-sm font-medium text-gray-700">検索</label>
+                                    <div className="absolute inset-y-0 left-0 pl-3 pt-5 flex items-center pointer-events-none"><svg className="w-5 h-5 text-gray-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clipRule="evenodd" /></svg></div>
+                                    <input id="search-input" type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className="mt-1 block w-full pl-10 pr-3 py-2 border border-gray-300 rounded-md leading-5 bg-white placeholder-gray-500 focus:outline-none focus:placeholder-gray-400 focus:ring-1 focus:ring-blue-500 focus:border-blue-500 sm:text-sm" />
+                                </div>
+                                <div className="flex items-end space-x-2 w-full sm:w-auto">
+                                    <button 
+                                        type="button"
+                                        onClick={() => { setScannerTarget('search'); setIsScannerOpen(true); }}
+                                        className="flex items-center justify-center w-full sm:w-auto mt-1 bg-gray-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md hover:bg-gray-800 transition-colors h-10">
+                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4" /><path d="M3 6.2C3 5.008 3.992 4.02 5.2 4.02h13.6c1.208 0 2.2 0.988 2.2 2.18V17.8c0 1.192-0.992 2.18-2.2 2.18H5.2C3.992 19.98 3 19.012 3 17.8V6.2z"></path></svg>
+                                        スキャン
+                                    </button>
+                                    <div className="flex-grow">
+                                        <label htmlFor="sort-by" className="block text-sm font-medium text-gray-700">並び替え</label>
+                                        <select id="sort-by" value={sortBy} onChange={e => setSortBy(e.target.value)} className="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-md">
+                                            <option value="createdAt">追加日</option>
+                                            <option value="type">材料</option>
+                                            <option value="color">色</option>
+                                            <option value="percentage">残量</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {loading ? (<p className="text-center text-gray-500 py-8">データを読み込み中...</p>) : sortedAndFilteredFilaments.length > 0 ? (<div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">{sortedAndFilteredFilaments.map(filament => (<FilamentCard key={filament.id} filament={filament} onDeleteClick={handleDeleteClick} />))}</div>) : (<p className="text-center text-gray-500 py-8">該当するフィラメントがありません。</p>)}
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const container = document.getElementById('root');
+        const root = ReactDOM.createRoot(container);
+        root.render(<App />);
+    </script>
+</body>
+</html>
